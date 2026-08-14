@@ -11,7 +11,7 @@ Last updated: 2026-08-14.
 
 | Item | Decision | Why |
 |---|---|---|
-| Databricks workspace access | **Not yet provided.** Building all code locally; nothing has been deployed or run against a live workspace. | You chose "build locally first." |
+| Databricks workspace access | **Connected 2026-08-14.** Free Edition workspace `https://dbc-d79ec249-6e44.cloud.databricks.com`, CLI profile `grid_poc`, OAuth browser login (not a PAT). Created catalog `grid_poc` with `bronze`/`silver`/`gold` schemas, alongside the existing `wind_dev` catalog (left untouched — that's your other project). Cloned the GitHub repo into the workspace at `/Repos/dhaval.m@brilworks.com/grid-reliability-accelerator-poc`. | You provided the workspace URL and confirmed connecting. |
 | EIA Open Data API key | **Skipped for now.** `gold.grid_context` / EIA ingestion is stubbed, not implemented. | You chose to skip EIA. |
 | Project location | `C:\Users\LENOVO\Downloads\energy` | Confirmed. |
 | Dev tooling | Git 2.55 and Python 3.12 installed via winget (machine had neither). | Needed to clone repos / run code. |
@@ -122,11 +122,11 @@ energy/
 
 ## Next step
 
-Everything buildable without a live Databricks workspace is done — all 6 phases
-have at least a code-complete, locally-tested-where-possible draft. **The next
-action is providing workspace access** (host + PAT/OAuth token, per Hard
-Constraint #3): from there the actual work is running `docs/runbook.md`'s setup
-steps, fixing whatever breaks (the `applyInPandasWithState` state serialization
-and the Comtrade bucket access risk are the two most likely spots), building the
-3 dashboard tiles that weren't safe to hand-write as JSON, and completing the two
-required dry runs before calling this demo-ready.
+Workspace access is now connected and the repo is live in `/Repos` (see above).
+Remaining before demo-ready: run `docs/runbook.md`'s setup steps for real (Volumes,
+DLT pipeline, jobs, SQL warehouse ID already known: `a7d6c2cb218c12fa`), fix whatever
+breaks (the `applyInPandasWithState` state serialization and the Comtrade bucket
+access risk are the two most likely spots — worth testing the Comtrade bucket from
+an actual cluster/serverless context first, since that's now possible and decides
+whether Phase 4's CNN path is viable at all), build the 3 dashboard tiles that
+weren't safe to hand-write as JSON, and complete the two required dry runs.
