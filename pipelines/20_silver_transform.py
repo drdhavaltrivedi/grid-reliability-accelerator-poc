@@ -32,8 +32,12 @@ from pyspark.sql.types import StructType, StructField, StringType, TimestampType
 @dlt.expect_or_drop("valid_voltage", "voltage IS NOT NULL AND voltage > 0")
 @dlt.expect_or_drop("valid_reading_id", "reading_id IS NOT NULL")
 def _sensor_readings_synthetic_silver():
+    # cross-schema read: sensor_readings_raw lives in the bronze pipeline/schema,
+    # this notebook runs as its own (silver) pipeline - see README.md "3 separate
+    # pipelines" deployment note. Fully-qualified spark.readStream.table (not
+    # dlt.read_stream) since it's outside this pipeline's own DAG.
     return (
-        dlt.read_stream("sensor_readings_raw")
+        spark.readStream.table(f"{CATALOG}.{BRONZE_SCHEMA}.sensor_readings_raw")
         .select(
             F.col("reading_id"),
             F.col("device_id"),
@@ -76,7 +80,7 @@ def _sensor_readings_lcl_silver():
     current_a = power_w / F.lit(LCL_ASSUMED_NOMINAL_VOLTAGE)
 
     return (
-        dlt.read_stream("lcl_smart_meter_raw")
+        spark.readStream.table(f"{CATALOG}.{BRONZE_SCHEMA}.lcl_smart_meter_raw")
         .filter(kwh_per_hh.isNotNull())
         .select(
             F.concat(F.lit("lcl_"), F.col("LCLid"), F.lit("_"), F.col("DateTime")).alias("reading_id"),
@@ -146,7 +150,7 @@ def _pivot_comtrade_channels(pdf):
 )
 def fault_events():
     exploded = (
-        dlt.read_stream("comtrade_events_raw")
+        spark.readStream.table(f"{CATALOG}.{BRONZE_SCHEMA}.comtrade_events_raw")
         .withColumn(
             "reading",
             F.explode(F.arrays_zip(F.col("microseconds"), F.col("analog"))),

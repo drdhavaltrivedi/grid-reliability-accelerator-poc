@@ -37,10 +37,10 @@ import pyspark.sql.functions as F
     table_properties={"quality": "gold"},
 )
 def feeder_health():
-    # assumes this notebook is included in the same DLT pipeline as
-    # 20_silver_transform.py, so dlt.read_stream resolves the internal lineage;
-    # if run as a separate pipeline, swap for spark.readStream.table(f"{CATALOG}.{SILVER_SCHEMA}.sensor_readings")
-    readings = dlt.read_stream("sensor_readings").filter(F.col("source") == "synthetic")
+    # cross-schema read: this notebook runs as its own (gold) pipeline, separate
+    # from 20_silver_transform.py's (silver) pipeline - see README.md "3 separate
+    # pipelines" deployment note.
+    readings = spark.readStream.table(f"{CATALOG}.{SILVER_SCHEMA}.sensor_readings").filter(F.col("source") == "synthetic")
 
     windowed = (
         readings
@@ -97,4 +97,7 @@ def feeder_health():
     table_properties={"quality": "gold"},
 )
 def grid_context():
-    return dlt.read("eia_grid_data_raw").select("region", "period", "demand_mwh", "generation_mwh")
+    return (
+        spark.read.table(f"{CATALOG}.{BRONZE_SCHEMA}.eia_grid_data_raw")
+        .select("region", "period", "demand_mwh", "generation_mwh")
+    )
