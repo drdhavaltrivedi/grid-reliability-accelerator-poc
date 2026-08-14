@@ -15,7 +15,12 @@ import pyspark.sql.functions as F
 
 # COMMAND ----------
 
-# MAGIC %run "./00_config"
+# Config inlined rather than `%run "./00_config"` - see 10_bronze_ingestion.py
+# for why. Keep in sync with 00_config.py if these change.
+CATALOG = "grid_poc"
+BRONZE_SCHEMA = "bronze"
+SILVER_SCHEMA = "silver"
+GOLD_SCHEMA = "gold"
 
 # COMMAND ----------
 

@@ -20,7 +20,15 @@ from pyspark.sql.types import StructType, StructField, StringType, DoubleType, L
 
 # COMMAND ----------
 
-# MAGIC %run "./00_config"
+# Config inlined rather than `%run "./00_config"` - %run-included variables
+# didn't reliably propagate into DLT's execution model (NameError on first
+# deploy attempt, 2026-08-14). See 00_config.py for the documented/canonical
+# source of these values; keep both in sync if they change.
+CATALOG = "grid_poc"
+BRONZE_SCHEMA = "bronze"
+SENSOR_READINGS_LANDING_PATH = f"/Volumes/{CATALOG}/{BRONZE_SCHEMA}/landing/sensor_readings_raw"
+COMTRADE_SOURCE_PATH = "s3://db-gtm-industry-solutions/data/rcg/comtrade/source"
+LCL_LANDING_PATH = f"/Volumes/{CATALOG}/{BRONZE_SCHEMA}/landing/lcl_smart_meter_raw"
 
 # COMMAND ----------
 
