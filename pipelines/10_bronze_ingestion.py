@@ -41,6 +41,25 @@ LCL_LANDING_PATH = f"/Volumes/{CATALOG}/{BRONZE_SCHEMA}/landing/lcl_smart_meter_
 
 # COMMAND ----------
 
+# Declared explicitly rather than letting Auto Loader infer it: inference fails
+# outright on an empty landing directory (CF_EMPTY_DIR_FOR_SCHEMA_INFERENCE),
+# which is exactly the state right after `demo_runner.py reset`. An explicit
+# schema lets the pipeline start cleanly before any telemetry has landed.
+# Matches src/telemetry_generator's output (see docs/data_dictionary.md).
+SENSOR_READINGS_RAW_SCHEMA = StructType([
+    StructField("reading_id", StringType()),
+    StructField("device_id", StringType()),
+    StructField("feeder_id", StringType()),
+    StructField("ts", StringType()),  # ISO 8601, cast to timestamp in silver
+    StructField("voltage", DoubleType()),
+    StructField("current", DoubleType()),
+    StructField("frequency", DoubleType()),
+    StructField("event_flag", LongType()),
+    StructField("source", StringType()),
+    StructField("_fault_id", StringType()),
+    StructField("_fault_type_truth", StringType()),
+])
+
 @dlt.table(
     name="sensor_readings_raw",
     comment="Synthetic grid-edge telemetry landed by src/telemetry_generator via Auto Loader.",
@@ -51,6 +70,7 @@ def sensor_readings_raw():
         spark.readStream.format("cloudFiles")
         .option("cloudFiles.format", "parquet")
         .option("cloudFiles.schemaLocation", f"{SENSOR_READINGS_LANDING_PATH}/_schema")
+        .schema(SENSOR_READINGS_RAW_SCHEMA)
         .load(SENSOR_READINGS_LANDING_PATH)
         .withColumn("_ingested_at", F.current_timestamp())
     )
@@ -137,6 +157,16 @@ def comtrade_events_raw():
 
 # COMMAND ----------
 
+# Explicit for the same reason as SENSOR_READINGS_RAW_SCHEMA above. Column names
+# (including the trailing space in the kWh header) confirmed against the real
+# source files - see scripts/fetch_lcl_sample.py.
+LCL_RAW_SCHEMA = StructType([
+    StructField("LCLid", StringType()),
+    StructField("stdorToU", StringType()),
+    StructField("DateTime", StringType()),
+    StructField("KWH/hh (per half hour) ", StringType()),
+])
+
 @dlt.table(
     name="lcl_smart_meter_raw",
     comment="Low Carbon London half-hourly household smart meter subset. Pattern/noise reference only - UK/urban data, not a literal rural-utility load profile.",
@@ -148,6 +178,7 @@ def lcl_smart_meter_raw():
         .option("cloudFiles.format", "csv")
         .option("cloudFiles.schemaLocation", f"{LCL_LANDING_PATH}/_schema")
         .option("header", "true")
+        .schema(LCL_RAW_SCHEMA)
         .load(LCL_LANDING_PATH)
         .withColumn("_ingested_at", F.current_timestamp())
     )
