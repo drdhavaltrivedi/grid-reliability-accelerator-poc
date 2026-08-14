@@ -55,7 +55,10 @@ def feeder_health():
             F.avg("voltage").alias("avg_voltage"),
             F.avg("current").alias("avg_current"),
             F.avg("frequency").alias("avg_frequency"),
-            F.countDistinct("device_id").alias("device_count"),
+            # approx_count_distinct, not countDistinct: exact distinct aggregations
+            # aren't supported in streaming aggregations. At demo scale (tens to
+            # low hundreds of devices per feeder) HyperLogLog is exact in practice.
+            F.approx_count_distinct("device_id").alias("device_count"),
         )
         .select(
             F.col("window.start").alias("window_start"),
