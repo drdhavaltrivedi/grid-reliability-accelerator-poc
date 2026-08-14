@@ -167,6 +167,12 @@ LCL_RAW_SCHEMA = StructType([
     StructField("KWH/hh (per half hour) ", StringType()),
 ])
 
+# Delta rejects column names containing ' ,;{}()\n\t=' - the source header
+# "KWH/hh (per half hour) " hits that on both spaces and parens, so it's read
+# under its real name (above) and immediately renamed to this Delta-safe one.
+# Downstream (20_silver_transform.py) refers to the renamed column.
+LCL_KWH_COLUMN = "kwh_per_half_hour"
+
 @dlt.table(
     name="lcl_smart_meter_raw",
     comment="Low Carbon London half-hourly household smart meter subset. Pattern/noise reference only - UK/urban data, not a literal rural-utility load profile.",
@@ -180,6 +186,7 @@ def lcl_smart_meter_raw():
         .option("header", "true")
         .schema(LCL_RAW_SCHEMA)
         .load(LCL_LANDING_PATH)
+        .withColumnRenamed("KWH/hh (per half hour) ", LCL_KWH_COLUMN)
         .withColumn("_ingested_at", F.current_timestamp())
     )
 

@@ -79,7 +79,9 @@ def _sensor_readings_synthetic_silver():
 
 @dlt.table(name="_sensor_readings_lcl_silver", comment="Derived pattern-reference readings from LCL consumption data (internal, feeds sensor_readings)")
 def _sensor_readings_lcl_silver():
-    kwh_per_hh = F.col("`KWH/hh (per half hour) `").cast("double")
+    # bronze renamed the source's "KWH/hh (per half hour) " header to this
+    # Delta-safe name (Delta rejects spaces/parens in column names).
+    kwh_per_hh = F.col("kwh_per_half_hour").cast("double")
     power_w = kwh_per_hh * 2.0 * 1000.0  # kWh/hh -> average W over the half hour
     current_a = power_w / F.lit(LCL_ASSUMED_NOMINAL_VOLTAGE)
 
