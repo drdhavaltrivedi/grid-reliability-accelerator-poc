@@ -15,8 +15,8 @@ import dlt
 import pyspark.sql.functions as F
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, LongType, ArrayType
 # comtrade/numpy/json imports removed - only needed by the disabled Comtrade
-# ingestion (see the comment block below); dropped so this notebook doesn't
-# need `%pip install comtrade` at all now that path is dead.
+# ingestion (see the comment block below); dropped so this notebook has no
+# extra cluster library dependency now that path is dead.
 
 # COMMAND ----------
 
