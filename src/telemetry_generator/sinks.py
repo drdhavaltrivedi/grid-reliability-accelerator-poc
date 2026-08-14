@@ -76,16 +76,39 @@ class ParquetSink(Sink):
     """Writes one parquet file per flush into `directory`, named so a
     directory listing sorts in write order - the shape Auto Loader's
     `cloudFiles` source expects when pointed at a landing zone.
+
+    Writes with an explicit, fixed pyarrow schema. Without it, the
+    `_fault_id`/`_fault_type_truth` columns come out as parquet `null` type
+    in batches where no fault is active (all values None) but `string` in
+    batches where one is - an unstable schema across files, which fails the
+    downstream Auto Loader read with PARQUET_COLUMN_DATA_TYPE_MISMATCH. That
+    would surface precisely when a fault is injected, i.e. mid-demo.
     """
+
+    SCHEMA_FIELDS = [
+        ("reading_id", "string"),
+        ("device_id", "string"),
+        ("feeder_id", "string"),
+        ("ts", "string"),
+        ("voltage", "double"),
+        ("current", "double"),
+        ("frequency", "double"),
+        ("event_flag", "int64"),
+        ("source", "string"),
+        ("_fault_id", "string"),
+        ("_fault_type_truth", "string"),
+    ]
 
     def __init__(self, directory: str | Path) -> None:
         try:
-            import pandas as pd  # noqa: F401
+            import pyarrow as pa
         except ImportError as e:
             raise ImportError(
                 "ParquetSink requires pandas and pyarrow: pip install pandas pyarrow"
             ) from e
 
+        type_map = {"string": pa.string(), "double": pa.float64(), "int64": pa.int64()}
+        self._schema = pa.schema([(name, type_map[t]) for name, t in self.SCHEMA_FIELDS])
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self._batch_num = 0
@@ -93,11 +116,12 @@ class ParquetSink(Sink):
     def write(self, rows: list[dict]) -> None:
         if not rows:
             return
-        import pandas as pd
+        import pyarrow as pa
+        import pyarrow.parquet as pq
 
-        df = pd.DataFrame(rows)
+        table = pa.Table.from_pylist(rows, schema=self._schema)
         fname = f"part-{self._batch_num:06d}-{uuid.uuid4().hex[:8]}.parquet"
-        df.to_parquet(self.directory / fname, index=False)
+        pq.write_table(table, self.directory / fname)
         self._batch_num += 1
 
 

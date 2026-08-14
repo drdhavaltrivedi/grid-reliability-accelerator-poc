@@ -1,132 +1,296 @@
-# Grid Reliability Accelerator POC — Build Status
+# Grid Reliability Accelerator — Databricks POC
 
-Sales-enablement POC for a Databricks consulting partner: real-time grid-edge fault
-detection for electric utilities (Delta Lake, Unity Catalog, Structured Streaming,
-AI/BI dashboards, Genie). Built per `CLAUDE_CODE_BUILD_PROMPT.md` in this directory —
-read that first for full business context and requirements.
+Real-time grid-edge fault detection for electric utilities, built on Databricks
+(Delta Lake, Unity Catalog, Structured Streaming, Lakeflow Declarative Pipelines,
+AI/BI dashboards, Genie).
 
-Last updated: 2026-08-14.
+Sales-enablement proof-of-concept for a Databricks consulting partner. Built per
+[`CLAUDE_CODE_BUILD_PROMPT.md`](CLAUDE_CODE_BUILD_PROMPT.md), which remains the
+source of truth for requirements.
 
-## Standing decisions (resolved [ASK USER]/[CONFIRM] items)
+**Live workspace:** `https://dbc-d79ec249-6e44.cloud.databricks.com` · catalog `grid_poc`
+**Repo:** https://github.com/drdhavaltrivedi/grid-reliability-accelerator-poc
 
-| Item | Decision | Why |
+---
+
+## 1. The problem
+
+Electric distribution utilities — especially **rural electric cooperatives and
+municipal utilities**, the ICP for this POC — face a specific, expensive problem:
+
+| Fact | Consequence |
+|---|---|
+| Up to **80%** of distribution faults occur on unmonitored/under-protected laterals at the grid edge | The utility often doesn't know a fault happened until a member calls it in |
+| Roughly **70%** of those faults are **transient** (a branch brushing a line, an animal, a lightning-induced flashover) — they self-clear in seconds | Most faults need *no* crew response at all |
+| The remaining ~30% are **sustained** — they need a truck | But without telemetry you can't tell which is which |
+
+So crews get dispatched for faults that already cleared themselves. Each
+unnecessary truck roll costs money and, more critically for a co-op, **consumes
+scarce crew capacity across a large rural service territory** — capacity that
+isn't available for the sustained fault happening 40 miles away.
+
+**Why this segment specifically:** enterprise fault-detection point solutions
+(GE, Siemens, ABB, Sense) are priced for large investor-owned utilities. Co-ops
+and municipals have the same physics problem and a fraction of the budget. That
+gap is the commercial opening this POC is built to demonstrate.
+
+## 2. The solution
+
+Distinguish **transient** from **sustained** in near-real-time, on a governed
+lakehouse, so the dispatch decision is data-driven instead of reflexive.
+
+```mermaid
+flowchart LR
+    A["⚡ Grid-edge sensors<br/>voltage · current · frequency"] -->|"1 reading/sec"| B["Bronze<br/>raw landing"]
+    B --> C["Silver<br/>unified, quality-checked"]
+    C --> D["Detection<br/>per-device z-score<br/>+ duration rule"]
+    D --> E["Gold<br/>fault_classifications<br/>feeder_health"]
+    E --> F["AI/BI Dashboard"]
+    E --> G["Genie<br/>natural language Q&A"]
+
+    style A fill:#f5f5f5,stroke:#333,color:#000
+    style B fill:#cd7f32,stroke:#333,color:#fff
+    style C fill:#c0c0c0,stroke:#333,color:#000
+    style D fill:#4a90d9,stroke:#333,color:#fff
+    style E fill:#ffd700,stroke:#333,color:#000
+    style F fill:#90ee90,stroke:#333,color:#000
+    style G fill:#90ee90,stroke:#333,color:#000
+```
+
+**The demo moment:** a stakeholder watches a fault get injected live, sees it
+detected and classified within seconds on the dashboard, then asks Genie a
+plain-English question about it — and the answer comes from the *same* Unity
+Catalog tables driving the dashboard. One governed data model, not three
+disconnected tools.
+
+### How the classification actually works
+
+Rather than a black box, the rule is deliberately explainable — which matters when
+selling to a utility engineer who will ask:
+
+```mermaid
+flowchart TD
+    A[New reading for device] --> B{"Rolling baseline<br/>ready? (≥10 readings)"}
+    B -->|No| C[Update baseline, emit nothing]
+    B -->|Yes| D["Compute z-score vs. that device's<br/>own trailing 30-reading baseline"]
+    D --> E{"|z| ≥ 6 on<br/>voltage or current?"}
+    E -->|No| F{Was an event open?}
+    F -->|No| C
+    F -->|Yes| G["Event ended.<br/>Duration < 5s → TRANSIENT"]
+    E -->|Yes| H{Event already open?}
+    H -->|No| I["Open event.<br/>Emit unclassified"]
+    H -->|Yes| J{"Open ≥ 5s<br/>and still faulting?"}
+    J -->|Yes| K["Upgrade to SUSTAINED<br/>(while still active)"]
+    J -->|No| L[Keep accumulating]
+
+    style G fill:#90ee90,stroke:#333,color:#000
+    style K fill:#ff6b6b,stroke:#333,color:#fff
+```
+
+Two design choices worth calling out:
+
+1. **The baseline only updates while the device is *not* faulting.** Otherwise a
+   sustained fault slowly drags its own baseline toward the fault value and the
+   detector goes blind to it.
+2. **Sustained is detected *in flight*, not post-hoc.** At the 5s mark, while the
+   fault is still active, it upgrades — that's what makes a live demo compelling
+   rather than a retrospective report.
+
+## 3. Architecture
+
+```mermaid
+flowchart TB
+    subgraph SOURCES["Data sources"]
+        S1["Synthetic telemetry generator<br/>src/telemetry_generator<br/>50-200 devices @ 1 Hz"]
+        S2["Low Carbon London<br/>smart meter subset<br/>300 households · CC-BY"]
+        S3["EIA Open Data API<br/>⚠ STUBBED - no key"]
+        S4["Comtrade fault files<br/>⚠ DISABLED - 403"]
+    end
+
+    subgraph BRONZE["grid_poc.bronze — raw, as-landed"]
+        B1[sensor_readings_raw]
+        B2[lcl_smart_meter_raw]
+        B3[eia_grid_data_raw]
+        B4[comtrade_events_raw]
+    end
+
+    subgraph SILVER["grid_poc.silver — unified, quality-enforced"]
+        V1["sensor_readings<br/>one schema, provenance kept"]
+        V2[fault_events]
+    end
+
+    subgraph GOLD["grid_poc.gold — serving"]
+        G1[fault_classifications]
+        G2[feeder_health]
+        G3[grid_context]
+    end
+
+    subgraph SERVE["Consumption"]
+        D1[AI/BI Dashboard]
+        D2[Genie Space]
+    end
+
+    S1 -->|Auto Loader<br/>parquet| B1
+    S2 -->|Auto Loader<br/>CSV| B2
+    S3 -.->|not wired| B3
+    S4 -.->|not wired| B4
+
+    B1 --> V1
+    B2 --> V1
+    B4 -.-> V2
+    B3 -.-> G3
+
+    V1 -->|"Structured Streaming<br/>applyInPandasWithState"| G1
+    V1 -->|1-min windows| G2
+    G1 --> G2
+
+    G1 --> D1
+    G2 --> D1
+    G3 -.-> D1
+    G1 --> D2
+    G2 --> D2
+
+    style BRONZE fill:#fff4e6,color:#000
+    style SILVER fill:#f0f0f0,color:#000
+    style GOLD fill:#fffde7,color:#000
+    style SERVE fill:#e8f5e9,color:#000
+    style S3 fill:#ffe0e0,color:#000
+    style S4 fill:#ffe0e0,color:#000
+```
+
+Dotted lines = declared but not carrying data (see [Known gaps](#7-known-gaps--open-items)).
+
+### The ELT flow, step by step
+
+| # | Stage | What happens | Where |
+|---|---|---|---|
+| 1 | **Generate** | Telemetry generator emits one reading per device per second; a fault can be injected on demand via CLI or a control file | `src/telemetry_generator/` |
+| 2 | **Land** | Parquet micro-batches written to a Unity Catalog Volume | `/Volumes/grid_poc/bronze/landing/` |
+| 3 | **Extract → Bronze** | Auto Loader (`cloudFiles`) incrementally ingests new files; **explicit schemas** so the pipeline starts cleanly on an empty directory | `pipelines/10_bronze_ingestion.py` |
+| 4 | **Transform → Silver** | Type casting, quality expectations (`@dlt.expect_or_drop`), ground-truth columns dropped, synthetic + LCL unioned into one schema with `source` provenance | `pipelines/20_silver_transform.py` |
+| 5 | **Detect** | Per-device stateful streaming z-score + duration rule → transient/sustained | `pipelines/30_fault_detection_stream.py` |
+| 6 | **Aggregate → Gold** | 1-minute per-feeder health windows joined to fault counts | `pipelines/40_gold_serving.py` |
+| 7 | **Serve** | Dashboard tiles + Genie NL questions, both over gold only | `docs/dashboard_plan.md`, `docs/genie_space.md` |
+
+Full column-level schemas: **[`docs/data_dictionary.md`](docs/data_dictionary.md)**.
+
+### Why the LCL data is handled carefully
+
+Low Carbon London is household **consumption** data (kWh per half-hour) — it has no
+voltage, current, or frequency. To fit the unified schema, a current-like value is
+*derived* (`I = kWh/hh × 2000 / 230V`). That's a real modelling decision with a
+real risk of being mistaken for measured grid telemetry, so it's fenced off:
+
+- tagged `source = 'lcl'`
+- assigned a distinct `feeder_lcl_reference` feeder namespace, so it **cannot**
+  silently blend into real feeder rollups
+- frequency left at the UK grid's true **50 Hz** rather than faked to 60 Hz —
+  fabricating a plausible-looking value would be worse than an honest mismatch
+- gold aggregations filter to `source = 'synthetic'`
+
+## 4. What's deployed and working
+
+| Component | Status |
+|---|---|
+| Unity Catalog `grid_poc` + bronze/silver/gold schemas | ✅ Created |
+| UC Volumes (landing zones, checkpoints) | ✅ Created |
+| GitHub repo → Databricks Repo | ✅ Synced |
+| LCL sample data (1.3M rows) uploaded | ✅ Uploaded |
+| Seed telemetry (1,000 readings) landed | ✅ Uploaded |
+| Telemetry generator | ✅ Built, 4/4 tests pass |
+| Fault detector (statistical) | ✅ Built, 3/3 tests pass |
+| Bronze / Silver / Gold pipelines | 🔄 Deploying — see [Deployment log](#6-deployment-log) |
+| Fault detection streaming job | ⏳ Pending |
+| Dashboard + Genie | ⏳ Pending |
+| Two clean dry runs | ⏳ Pending |
+
+**Local test suites** (no Databricks needed):
+```bash
+python tests/test_generator.py   # 4/4 pass
+python tests/test_detector.py    # 3/3 pass
+```
+
+## 5. Key decisions and deviations from the spec
+
+Every one of these is a place where reality diverged from the build spec. They are
+recorded here rather than silently absorbed.
+
+| # | Spec said | Reality | Resolution |
+|---|---|---|---|
+| 1 | Clone `databricks-industry-solutions/grid-edge-analytics` | **That repo does not exist** (404) | Found `comtrade-accelerator` — same domain, matches the description. Confirmed with the user before substituting. |
+| 2 | Run the accelerator's Comtrade sample data | Bucket returns **403 Forbidden**, verified *both* locally and **from inside Databricks** (anonymous credentials, no instance profile) | Comtrade ingestion **disabled**, not left as a silently-failing table. Real implementation preserved as comments. |
+| 3 | Adapt the Grid-Edge CNN for fault classification | The CNN consumes **726-sample high-resolution waveform captures**; our stream is 1 reading/sec SCADA-style telemetry — a **different data modality**. Plus its training data is behind the 403 above. | Statistical detector (Hard Constraint #2's documented fallback) is the **sole** detector. Flagged explicitly, not silently downgraded. |
+| 4 | CNN outputs fault classification | Accelerator's gold table emits a continuous `fault_score`, **not** a transient/sustained label | Duration-based rule layered on the detector produces the actual `fault_type` the spec's schema requires |
+| 5 | Use `digital-twin`'s `line_data_generator` as the pattern | That repo evolved into a manufacturing Zerobus/RDF/Lakebase system; the generator is manufacturing-domain and depends on `mandrova` (not on PyPI) | Used as an **architectural pattern only** (seeded per-entity generation, configurable noise, on-demand anomaly injection); reimplemented for grid fields with no exotic dependencies |
+| 6 | EIA Open Data API for regional context | Requires key registration | **Stubbed** at user's direction. Tables declared so the shape is documented; they return zero rows rather than pretending. |
+| 7 | Ingest LCL smart meter data | Full dataset is ~167M rows | Subset to 300 households × 3 months (1.3M rows, 0.8%) per Hard Constraint #2 |
+| 8 | `gold.fault_classifications` with 4 columns | Demo narrative needs device-level drill-down | Added `device_id`. Documented in the data dictionary. |
+
+## 6. Deployment log
+
+Real errors hit while deploying, and how each was resolved — kept because they're
+the non-obvious parts someone repeating this will also hit:
+
+| Error | Cause | Fix |
 |---|---|---|
-| Databricks workspace access | **Connected 2026-08-14.** Free Edition workspace `https://dbc-d79ec249-6e44.cloud.databricks.com`, CLI profile `grid_poc`, OAuth browser login (not a PAT). Created catalog `grid_poc` with `bronze`/`silver`/`gold` schemas, alongside the existing `wind_dev` catalog (left untouched — that's your other project). Cloned the GitHub repo into the workspace at `/Repos/dhaval.m@brilworks.com/grid-reliability-accelerator-poc`. | You provided the workspace URL and confirmed connecting. |
-| EIA Open Data API key | **Skipped for now.** `gold.grid_context` / EIA ingestion is stubbed, not implemented. | You chose to skip EIA. |
-| Project location | `C:\Users\LENOVO\Downloads\energy` | Confirmed. |
-| Dev tooling | Git 2.55 and Python 3.12 installed via winget (machine had neither). | Needed to clone repos / run code. |
-| Accelerator repo name | Spec says `databricks-industry-solutions/grid-edge-analytics` — **that repo doesn't exist (404)**. Using `databricks-industry-solutions/comtrade-accelerator` instead: matches the spec's description exactly (Comtrade fault detection, DLT, electric utilities). | You confirmed this substitution after I found it via GitHub search. |
-| `digital-twin` scope | Repo has evolved into a manufacturing-specific Zerobus/RDF/Lakebase/Databricks-Apps system, not the simple line-data generator the spec describes. Only actually used its `line_data_generator` submodule as an architectural **pattern reference** (seeded per-entity generation, configurable noise/anomaly injection) — not run or adapted directly, since it's manufacturing-domain and depends on a non-PyPI package (`mandrova`). | Spec only cited that submodule, not the whole repo. |
-| CNN vs statistical detector for the live stream | comtrade-accelerator's CNN consumes 726-sample, high-resolution 3-phase **waveform captures** (relay-triggered, sub-second). Our synthetic stream is continuous 1 reading/sec telemetry — a different data modality. Plan: use the statistical fallback (Hard Constraint #2) as the **primary live detector** in Phase 4; the CNN stays validated separately against native Comtrade data, not force-fit onto the synthetic stream. | Physical/architectural mismatch, not a cost or access problem. Still open to reconsider in Phase 4. |
-| Catalog/schema naming | Using the spec's suggestion as-is: `grid_poc.bronze` / `grid_poc.silver` / `grid_poc.gold`. | No existing workspace to check a convention against — nothing to conflict with yet. |
+| `PIP_INSTALL_NOT_AT_TOP_OF_NOTEBOOK` | A literal `%pip install` **inside a Python comment** was parsed as a real magic cell | Reworded the comment |
+| `NameError: SENSOR_READINGS_LANDING_PATH` | `%run "./00_config"` variables don't reliably propagate into DLT's execution model | Inlined config constants into each pipeline notebook |
+| `CF_EMPTY_DIR_FOR_SCHEMA_INFERENCE` | Auto Loader can't infer a schema from an empty landing dir — exactly the state after `demo_runner.py reset` | Declared **explicit schemas**; also removes a demo-day failure mode |
+| `DELTA_INVALID_CHARACTERS_IN_COLUMN_NAMES` | LCL's real header is `KWH/hh (per half hour) ` — spaces and parens are illegal in Delta column names | Renamed to `kwh_per_half_hour` at ingest |
+| Catalog creation via CLI rejected | Free Edition uses Default Storage; the catalog API wants an explicit `MANAGED LOCATION` | Created via SQL statement API instead |
 
-## ⚠️ Open risk: Comtrade sample bucket may not be publicly readable
+## 7. Known gaps / open items
 
-`s3://db-gtm-industry-solutions/data/rcg/comtrade/source/` (the Comtrade sample data
-Hard Constraint #2 requires cloning/running against) returned **`AccessDenied` on
-anonymous HTTPS GET and prefix listing** when checked directly (2026-08-14). This
-could mean: (a) it only allows reads from an authenticated AWS/Databricks execution
-context and will work fine once we're actually running on a Databricks cluster, or
-(b) the bucket has been locked down since the accelerator's 2023 publication and
-won't work there either. **Not yet verified either way — needs a live workspace to
-test.** If (b), Hard Constraint #2's fallback applies immediately: skip the CNN
-entirely (not just for the synthetic stream, as already decided above, but for
-*any* real training) and go straight to the statistical detector. Re-test this as
-the first thing once Databricks credentials are available, before spending any more
-time on CNN-adaptation code.
+Nothing below is hidden in a footnote — these are the honest limits of the POC as
+it stands:
 
-## Phase status
+- **Comtrade / CNN path is dead**, not deferred. Confirmed inaccessible from inside the workspace. Reviving it needs a legitimately accessible waveform dataset.
+- **EIA is stubbed.** `gold.grid_context` exists and returns zero rows. Needs an API key.
+- **`applyInPandasWithState` state serialization** (`pipelines/30_fault_detection_stream.py`) is the least-proven code in the repo — pickling detector state into Spark's `BINARY` state columns. Written carefully, needs a real run to trust.
+- **Dashboard JSON is a 2-tile skeleton.** The remaining 3 tiles from `docs/dashboard_plan.md` need building in the Lakeview UI; hand-writing that JSON blind was judged too error-prone.
+- **Two clean dry runs not yet done.** Per the spec's Definition of Done, the demo isn't demo-ready until they are.
+- **`confidence_score` is a heuristic** (`min(1, peak_z / 20)`), not a calibrated probability. Fine for a demo; don't let a prospect read it as a real confidence interval.
+- **Cost:** everything runs on serverless / 2X-Small. The accelerator's own default was a 5-worker cluster — deliberately not copied (Hard Constraint #4).
 
-- [x] **Phase 1 — Validate accelerators.** Cloned `comtrade-accelerator` and `digital-twin` into `accelerators/`. Read through all 5 comtrade-accelerator notebooks and RUNME.py. Could not run end-to-end (no workspace) — validated by code inspection instead. Key finding: its gold table (`fault_detection_gold`) outputs a continuous `fault_score`, not a transient/sustained label — Phase 4 will need to add a duration-based rule on top of it (or the statistical fallback) to produce `fault_type`.
-- [x] **Phase 2 — Synthetic generator.** `src/telemetry_generator/` — done and tested standalone (4/4 smoke tests pass, CLI verified live: triggered a transient fault, watched voltage sag/current spike/self-clear). See "What's built" below.
-- [x] **Phase 3 — Ingestion pipeline (code written, not yet run).** `pipelines/00_config.py`, `10_bronze_ingestion.py`, `20_silver_transform.py` — DLT definitions for all 4 bronze sources + unified `silver.sensor_readings` + `silver.fault_events`. EIA is a stubbed empty table (no key, per your "skip for now"). LCL: downloaded the real 759MB zip, inspected its actual structure (168 blocks, `LCLid`/`DateTime`/`KWH/hh (per half hour) ` columns), pulled 300 households × 3 months each (1.3M rows, 53.5MB) via `scripts/fetch_lcl_sample.py`, sanity-checked the derived current values against physical expectations (mean ~2.2A, peak ~58A at 230V — plausible household loads). Comtrade S3 source returned `AccessDenied` on anonymous access — flagged as an open risk above, needs testing from an actual Databricks cluster. None of this DLT code has been run against a live workspace yet.
-- [x] **Phase 4 — Detection (statistical detector done + tested; Spark wiring written, not run).** `src/fault_detector/` — per-device rolling z-score detector with a duration-based transient/sustained rule, tested standalone against the Phase 2 generator (3/3 tests pass: correct transient classification, in-flight upgrade to sustained, zero false positives over 1200 normal readings). `pipelines/30_fault_detection_stream.py` ports the same logic into Spark's `applyInPandasWithState` + `MERGE INTO gold.fault_classifications` — written as a plain Structured Streaming job rather than a DLT table (arbitrary stateful processing doesn't fit DLT's Python table API cleanly). Unverified against a real cluster, as with the rest of the pipeline code.
-- [x] **Phase 5 — Serving (drafted, not built/tested — needs a live workspace).** Added `gold.feeder_health` + `gold.grid_context` (`pipelines/40_gold_serving.py`), completing the medallion architecture. `docs/genie_space.md` — 5 tested-in-design NL questions with expected SQL, table/column descriptions for grounding, gold-only table list. `docs/dashboard_plan.md` — 5-tile content plan; `docs/dashboard_draft.lvdash.json` — best-effort 2-tile JSON skeleton, explicitly low-confidence (Lakeview's JSON schema is intricate enough that I don't trust a memory-written version without test-importing it).
-- [x] **Phase 6 — Drafted, not run (needs a live workspace).** `scripts/demo_runner.py` (reset/start/trigger/confirm/full-demo via Databricks CLI — resource names are `[CONFIRM]` placeholders to fill in once created), `docs/runbook.md` (setup steps + demo sequence + troubleshooting), `docs/data_dictionary.md` (actual-as-built schema for every table across all 4 layers, with every deviation from the spec's suggested schema called out). The spec's "run twice for repeatability" requirement is written into the runbook but not yet actually done.
-
-## What's built so far
-
-### `src/telemetry_generator/` (Phase 2 — done)
-
-Parameterized synthetic grid telemetry generator, runnable standalone (no Databricks needed).
-
-- `generator.py` — `TelemetryGenerator` class. 50–200+ simulated devices across feeders, 1 reading/device/tick baseline, seeded/deterministic per device.
-- `faults.py` — fault physics: voltage sag (35–70% of nominal) + current spike (2–5x) + small frequency offset. Transient faults last 0.5–2.5s, sustained faults 8–30s, drawn 70/30 to match the business context's "~70% of faults are transient" framing.
-- `sinks.py` — pluggable output: `console`, `jsonl`, `csv`, `parquet`. Parquet sink writes micro-batch files in the directory shape Auto Loader's `cloudFiles` will later ingest from — swapping to real bronze ingestion is a path change, not a rewrite.
-- `cli.py` — `python -m src.telemetry_generator run ...` and `... trigger ...`. `trigger` writes a small control file; a running `run` process polls it each tick, so a fault can be injected on demand into an already-live stream (the requirement for the live demo moment) without restarting anything.
-- Schema produced: `reading_id, device_id, feeder_id, ts, voltage, current, frequency, event_flag, source` (matches the spec's suggested fields exactly) plus `_fault_id`/`_fault_type_truth` — ground-truth columns for demo validation only, not something a real feed would have.
-- `tests/test_generator.py` — standalone smoke tests, run with `python tests/test_generator.py`.
-
-### `accelerators/` (Phase 1 reference material, not our code)
-
-- `comtrade-accelerator/` — cloned, read, not modified yet. Source of the fault-detection model approach for Phase 4.
-- `digital-twin/` — cloned, read for pattern reference only (see decisions table above).
-
-### `pipelines/` (Phase 3 — code written, not yet run)
-
-- `00_config.py` — catalog/schema names, source paths, the LCL voltage assumption.
-- `10_bronze_ingestion.py` — DLT tables: `sensor_readings_raw` (Auto Loader over the generator's parquet landing zone), `comtrade_events_raw` (binaryFile + join-on-filename + comtrade-library decode, adapted from comtrade-accelerator's own DLT notebook), `lcl_smart_meter_raw` (Auto Loader over the CSV subset), `eia_grid_data_raw` (stub, empty).
-- `20_silver_transform.py` — `sensor_readings` (unions cleaned synthetic readings with LCL-derived readings — LCL kWh converted to a current-like value via P=E/0.5h, I=P/230V, tagged `source='lcl'` and a distinct `feeder_lcl_reference` feeder namespace so it can't silently blend into real feeder rollups downstream), `fault_events` (Comtrade events flattened/pivoted to IA/IB/IC per timestep, feeds Phase 4's model input shape).
-
-### `scripts/fetch_lcl_sample.py` (Phase 3 — done, run against the real dataset)
-
-Downloads/reads the LCL zip's block CSVs (without extracting all 168), collects 300 households' first 3 months each, writes `data/raw/lcl_sample/lcl_sample.csv` (1.3M rows, 53.5MB — 0.8% of the full ~167M-row dataset). Verified the derived current values are physically plausible (mean ~2.2A, peak ~58A at 230V for household loads).
-
-### `src/fault_detector/` (Phase 4 — statistical detector done + tested)
-
-- `detector.py` — `StatisticalFaultDetector`. Per-device rolling baseline (trailing 30 readings, only updated while *not* anomalous so a fault doesn't drag its own baseline toward it) drives a z-score test on voltage/current (threshold 6σ — with the generator's noise levels, a real fault produces z-scores in the hundreds, so this has essentially zero false-positive rate while catching every injected fault). An active anomaly becomes a tracked event; duration ≥5s while still active upgrades it to `sustained` in place (so the demo shows near-real-time classification, not just a post-hoc one); clearing before 5s finalizes it as `transient`.
-- Emits `gold.fault_classifications`-shaped rows (`event_id, device_id, feeder_id, timestamp, fault_type, confidence_score` — `device_id` added beyond the spec's 4 listed columns since it's needed for the demo narrative/dashboard drill-down).
-- `tests/test_detector.py` — 3/3 pass: transient correctly classified after clearing, sustained correctly upgraded mid-event (before the fault even ends), zero false positives across 20 devices × 60s of normal operation.
-- `pipelines/30_fault_detection_stream.py` ports the identical per-device logic (literally imports the same dataclasses from `src/fault_detector/detector.py`) into Spark's `applyInPandasWithState`, grouped by `device_id`, upserting into `gold.fault_classifications` via `foreachBatch` + `MERGE INTO`. Written as a **plain Structured Streaming job, not a DLT table** — arbitrary stateful processing doesn't fit DLT's Python table API cleanly, so this runs as its own query rather than alongside `pipelines/10`/`20`. **Unverified against a real cluster** — the state-serialization plumbing (pickling the baseline/event objects into the `BINARY` columns `applyInPandasWithState` expects) is written carefully but is exactly the kind of thing that needs a real Spark session to confirm.
-
-### `pipelines/40_gold_serving.py` + `docs/` (Phases 5-6 — drafted, not built/tested)
-
-- `40_gold_serving.py` — `gold.feeder_health` (1-minute windowed aggregation over `silver.sensor_readings`, stream-static joined to `gold.fault_classifications` for a per-window fault count) and `gold.grid_context` (stub pass-through of the still-empty EIA bronze table).
-- `docs/genie_space.md` — which 3 gold tables to add, column descriptions for grounding, the 5 required NL questions with their expected SQL (to verify Genie's actual answers against during Phase 6).
-- `docs/dashboard_plan.md` — 5-tile content plan (feeder status grid, voltage/current time series, recent fault events, week-over-week fault count, EIA context stub). `docs/dashboard_draft.lvdash.json` — a deliberately minimal 2-tile (table-only) JSON skeleton; explicitly flagged low-confidence since I can't test-import Lakeview's JSON schema without a workspace.
-- `scripts/demo_runner.py` — CLI orchestration (`reset` / `start` / `trigger` / `confirm` / `full-demo`) shelling out to the `databricks` CLI. Resource names (job/pipeline names, SQL warehouse ID) are `[CONFIRM]` placeholders — fill in once those resources actually exist.
-- `docs/runbook.md` — one-time setup steps, the demo run sequence, troubleshooting notes, and a pointer back to the known-gaps list below.
-- `docs/data_dictionary.md` — actual-as-built schema for every bronze/silver/gold table, with every deviation from the spec's suggested schema explicitly called out (e.g. `fault_classifications.device_id` added, LCL's derived/non-measured voltage-current-frequency values, the `feeder_lcl_reference` namespace).
-
-## What's still a placeholder / open
-
-- **No Databricks workspace connected.** Nothing in `accelerators/` or `pipelines/` has actually been run end-to-end. Everything is validated by local execution (generator, LCL fetch) or code reading (accelerators, DLT pipeline code). This blocks real completion/verification of Phases 3–6.
-- **EIA regional context data** — not implemented, no API key. `gold.grid_context` doesn't exist yet.
-- **Comtrade bucket access** — returned `AccessDenied` anonymously; unverified whether it works from within Databricks. See risk callout above.
-- **`applyInPandasWithState` state serialization** (`pipelines/30_fault_detection_stream.py`) — written to spec but genuinely unverified; this is the piece most likely to need a real-cluster debugging pass.
-- **Cost-conscious cluster sizing** — comtrade-accelerator's own `RUNME.py` provisions a 5-worker cluster by default; will need to be right-sized (or moved to serverless) before any real deployment, per Hard Constraint #4.
-- **LCL data quality quirk** — a handful of rows (6 out of 1.3M in the sample) have the literal string `"Null"` in the kWh column instead of being empty; the silver transform's `.cast("double")` + `.isNotNull()` filter already handles this correctly, noting it here so it isn't mistaken for a bug later.
-- **Dashboard JSON** — only a 2-tile skeleton exists; the other 3 tiles in `docs/dashboard_plan.md` (line chart, status-grid, counter) need building in the Lakeview UI directly, since I judged their widget-spec schema too uncertain to hand-write reliably.
-- **`scripts/demo_runner.py` placeholders** — job/pipeline names and the SQL warehouse ID are placeholders; fill in once those resources are created (see `docs/runbook.md` step 10).
-- **Two clean dry runs** — not done (needs a workspace). Per Phase 6, don't trust the demo until this happens.
-
-## Repo layout
+## 8. Repo layout
 
 ```
 energy/
-  CLAUDE_CODE_BUILD_PROMPT.md   the build spec — source of truth for requirements
-  README.md                     this file
-  requirements.txt              local Python deps (pandas, pyarrow)
-  src/telemetry_generator/      Phase 2 generator (done)
-  src/fault_detector/           Phase 4 statistical detector (done + tested)
-  pipelines/                    Phase 3-5 DLT/streaming code (written, not run)
-  scripts/fetch_lcl_sample.py   Phase 3 LCL subset puller (done)
-  scripts/demo_runner.py        Phase 6 demo orchestration (drafted, not run)
-  docs/                         Phase 5-6 Genie/dashboard/runbook/data-dictionary (drafted)
-  tests/                        smoke tests
-  accelerators/                 cloned reference repos (Phase 1, read-only reference)
-  data/raw/lcl_sample/          LCL subset (300 households, 3 months each)
-  data/bronze/                  local landing zone the generator writes to
-  control/                      trigger.json control file for the CLI's `trigger` command
+├── CLAUDE_CODE_BUILD_PROMPT.md    the build spec (source of truth)
+├── README.md                      this file
+├── requirements.txt               local deps (pandas, pyarrow)
+├── src/
+│   ├── telemetry_generator/       Phase 2 — synthetic grid telemetry + fault injection
+│   └── fault_detector/            Phase 4 — statistical z-score detector
+├── pipelines/
+│   ├── 00_config.py               canonical config values
+│   ├── 10_bronze_ingestion.py     Auto Loader → bronze
+│   ├── 20_silver_transform.py     unified silver schema
+│   ├── 30_fault_detection_stream.py   stateful detection → gold
+│   └── 40_gold_serving.py         feeder health aggregation
+├── scripts/
+│   ├── fetch_lcl_sample.py        pulls the LCL subset
+│   └── demo_runner.py             reset / start / trigger / confirm
+├── docs/
+│   ├── data_dictionary.md         as-built schemas, every layer
+│   ├── runbook.md                 setup + demo sequence + troubleshooting
+│   ├── genie_space.md             5 NL questions + expected SQL
+│   └── dashboard_plan.md          tile-by-tile dashboard spec
+└── tests/                         standalone smoke tests
 ```
 
-## Next step
+## 9. Running it
 
-Workspace access is now connected and the repo is live in `/Repos` (see above).
-Remaining before demo-ready: run `docs/runbook.md`'s setup steps for real (Volumes,
-DLT pipeline, jobs, SQL warehouse ID already known: `a7d6c2cb218c12fa`), fix whatever
-breaks (the `applyInPandasWithState` state serialization and the Comtrade bucket
-access risk are the two most likely spots — worth testing the Comtrade bucket from
-an actual cluster/serverless context first, since that's now possible and decides
-whether Phase 4's CNN path is viable at all), build the 3 dashboard tiles that
-weren't safe to hand-write as JSON, and complete the two required dry runs.
+**Local (no Databricks):**
+```bash
+pip install -r requirements.txt
+python tests/test_generator.py
+python tests/test_detector.py
+
+# watch a fault get injected and self-clear
+python -m src.telemetry_generator run --num-devices 20 --rate 2 --duration 10 --sink console
+# in another terminal:
+python -m src.telemetry_generator trigger --device-id dev_0005 --fault-type sustained
+```
+
+**On Databricks:** follow [`docs/runbook.md`](docs/runbook.md).
