@@ -155,8 +155,12 @@ def _pivot_comtrade_channels(pdf):
     table_properties={"quality": "silver"},
 )
 def fault_events():
+    # Batch read, not readStream: comtrade_events_raw is currently a disabled
+    # empty stub (materialized view), and DLT can't stream from a materialized
+    # view (STREAMING_FROM_MATERIALIZED_VIEW). If Comtrade ingestion is ever
+    # revived as a real streaming source, switch this back to readStream.
     exploded = (
-        spark.readStream.table(f"{CATALOG}.{BRONZE_SCHEMA}.comtrade_events_raw")
+        spark.read.table(f"{CATALOG}.{BRONZE_SCHEMA}.comtrade_events_raw")
         .withColumn(
             "reading",
             F.explode(F.arrays_zip(F.col("microseconds"), F.col("analog"))),
