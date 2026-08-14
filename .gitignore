@@ -1,0 +1,21 @@
+# Cloned third-party reference repos (Phase 1) - not our IP, redundant with
+# the URLs documented in README.md; re-clone from there if needed.
+accelerators/
+
+# Data - regeneratable (src/telemetry_generator) or fetchable (scripts/fetch_lcl_sample.py),
+# not meant to live in git.
+data/
+
+# Runtime control file for the generator CLI's trigger command.
+control/*.json
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db

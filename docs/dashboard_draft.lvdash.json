@@ -1,0 +1,67 @@
+{
+  "_disclaimer": "Best-effort Lakeview dashboard skeleton, NOT verified by importing into a real workspace (no workspace access yet - see README.md). Only the two lowest-risk tile types (tables) are included; the line chart, counter, and status-grid tiles from docs/dashboard_plan.md are deliberately left out because their widget spec/encoding schema is intricate enough that a memory-written version is likely wrong. Treat this as a starting skeleton to fix up in the Lakeview UI, not a ready-to-import artifact. Delete this key before importing if it causes a schema-strictness error.",
+  "datasets": [
+    {
+      "name": "feeder_health_ds",
+      "displayName": "Feeder Health",
+      "queryLines": [
+        "SELECT * FROM grid_poc.gold.feeder_health ORDER BY window_end DESC"
+      ]
+    },
+    {
+      "name": "fault_classifications_ds",
+      "displayName": "Recent Fault Events",
+      "queryLines": [
+        "SELECT * FROM grid_poc.gold.fault_classifications ORDER BY timestamp DESC LIMIT 100"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "overview",
+      "displayName": "Grid Reliability Overview",
+      "layout": [
+        {
+          "widget": {
+            "name": "feeder_health_table",
+            "queries": [
+              {
+                "name": "feeder_health_query",
+                "query": {
+                  "datasetName": "feeder_health_ds",
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "table",
+              "encodings": {}
+            }
+          },
+          "position": { "x": 0, "y": 0, "width": 6, "height": 4 }
+        },
+        {
+          "widget": {
+            "name": "fault_events_table",
+            "queries": [
+              {
+                "name": "fault_events_query",
+                "query": {
+                  "datasetName": "fault_classifications_ds",
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "table",
+              "encodings": {}
+            }
+          },
+          "position": { "x": 0, "y": 4, "width": 6, "height": 4 }
+        }
+      ]
+    }
+  ]
+}
