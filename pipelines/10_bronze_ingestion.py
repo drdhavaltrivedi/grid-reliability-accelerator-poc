@@ -14,9 +14,9 @@
 import dlt
 import pyspark.sql.functions as F
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, LongType, ArrayType
-import numpy as np
-import json
-from comtrade import Comtrade  # pip install comtrade==0.0.10 - same dependency comtrade-accelerator uses
+# comtrade/numpy/json imports removed - only needed by the disabled Comtrade
+# ingestion (see the comment block below); dropped so this notebook doesn't
+# need `%pip install comtrade` at all now that path is dead.
 
 # COMMAND ----------
 
@@ -50,103 +50,74 @@ def sensor_readings_raw():
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Bronze: Comtrade fault event files
-# MAGIC Adapted from comtrade-accelerator's `04_Fault_Detection_DLT.py` bronze tables
-# MAGIC (`config_files_bronze`, `dat_files_bronze`, `joined_files_bronze`) - same
-# MAGIC binaryFile + join-on-filename pattern, renamed to fit our naming and folded
-# MAGIC into a single `comtrade_events_raw` table per the spec's bronze table list.
+# MAGIC ## Bronze: Comtrade fault event files — DISABLED, confirmed inaccessible
+# MAGIC **Tested directly from this workspace on 2026-08-14** (a one-off serverless
+# MAGIC job run against `COMTRADE_SOURCE_PATH`): `403 Forbidden`, `UNAUTHORIZED_ACCESS`,
+# MAGIC using `AnonymousAWSCredentials` - this bucket does not allow anonymous S3
+# MAGIC reads and no AWS instance profile is configured for it in this workspace. This
+# MAGIC is not a "might work from a real cluster" risk anymore - it's confirmed dead.
+# MAGIC Per Hard Constraint #2, this means the CNN path is out entirely; the
+# MAGIC statistical detector (`src/fault_detector`, wired in `30_fault_detection_stream.py`)
+# MAGIC is the sole detection method.
+# MAGIC
+# MAGIC The real implementation (Auto Loader binaryFile + join-on-filename + comtrade
+# MAGIC library decode, adapted from comtrade-accelerator's `04_Fault_Detection_DLT.py`)
+# MAGIC is preserved below as a **plain comment**, not live code, in case a working
+# MAGIC data source is found later (e.g. an AWS account with legitimate access, or a
+# MAGIC different sample dataset). The live table below is a stub matching its
+# MAGIC intended schema, same pattern as `eia_grid_data_raw`.
+# MAGIC
+# MAGIC ```python
+# MAGIC @dlt.table(name="_comtrade_cfg_files_bronze", comment="Raw .cfg files (internal, feeds comtrade_events_raw)")
+# MAGIC def _comtrade_cfg_files_bronze():
+# MAGIC     return (
+# MAGIC         spark.readStream.format("cloudFiles")
+# MAGIC         .option("cloudFiles.format", "binaryFile")
+# MAGIC         .option("pathGlobFilter", "*.cfg")
+# MAGIC         .load(COMTRADE_SOURCE_PATH)
+# MAGIC         .withColumn("base_name", F.element_at(F.split(F.input_file_name(), "[.]"), 1))
+# MAGIC         .withColumnRenamed("content", "content_cfg")
+# MAGIC         .withColumnRenamed("modificationTime", "cfg_mod_time")
+# MAGIC     )
+# MAGIC
+# MAGIC @dlt.table(name="_comtrade_dat_files_bronze", comment="Raw .dat files (internal, feeds comtrade_events_raw)")
+# MAGIC def _comtrade_dat_files_bronze():
+# MAGIC     return (
+# MAGIC         spark.readStream.format("cloudFiles")
+# MAGIC         .option("cloudFiles.format", "binaryFile")
+# MAGIC         .option("pathGlobFilter", "*.dat")
+# MAGIC         .load(COMTRADE_SOURCE_PATH)
+# MAGIC         .withColumn("base_name", F.element_at(F.split(F.input_file_name(), "[.]"), 1))
+# MAGIC         .withColumnRenamed("content", "content_dat")
+# MAGIC         .withColumnRenamed("modificationTime", "dat_mod_time")
+# MAGIC     )
+# MAGIC
+# MAGIC # (comtrade_events_raw would join the two above on base_name, then decode
+# MAGIC # via the comtrade library's Comtrade() reader - see git history for the
+# MAGIC # full version, or accelerators/comtrade-accelerator/04_Fault_Detection_DLT.py)
+# MAGIC ```
 
 # COMMAND ----------
 
-@dlt.table(name="_comtrade_cfg_files_bronze", comment="Raw .cfg files (internal, feeds comtrade_events_raw)")
-def _comtrade_cfg_files_bronze():
-    return (
-        spark.readStream.format("cloudFiles")
-        .option("cloudFiles.format", "binaryFile")
-        .option("pathGlobFilter", "*.cfg")
-        .load(COMTRADE_SOURCE_PATH)
-        .withColumn("base_name", F.element_at(F.split(F.input_file_name(), "[.]"), 1))
-        .withColumnRenamed("content", "content_cfg")
-        .withColumnRenamed("modificationTime", "cfg_mod_time")
-    )
-
-# COMMAND ----------
-
-@dlt.table(name="_comtrade_dat_files_bronze", comment="Raw .dat files (internal, feeds comtrade_events_raw)")
-def _comtrade_dat_files_bronze():
-    return (
-        spark.readStream.format("cloudFiles")
-        .option("cloudFiles.format", "binaryFile")
-        .option("pathGlobFilter", "*.dat")
-        .load(COMTRADE_SOURCE_PATH)
-        .withColumn("base_name", F.element_at(F.split(F.input_file_name(), "[.]"), 1))
-        .withColumnRenamed("content", "content_dat")
-        .withColumnRenamed("modificationTime", "dat_mod_time")
-    )
-
-# COMMAND ----------
+COMTRADE_RAW_SCHEMA = StructType([
+    StructField("base_name", StringType()),
+    StructField("frequency", DoubleType()),
+    StructField("rec_dev_id", StringType()),
+    StructField("station_name", StringType()),
+    StructField("microseconds", ArrayType(LongType())),
+    StructField("analog", ArrayType(ArrayType(DoubleType()))),
+    StructField("analog_units", ArrayType(StringType())),
+    StructField("analog_channel_names", ArrayType(StringType())),
+    StructField("_ingested_at", StringType()),
+])
 
 @dlt.table(
     name="comtrade_events_raw",
-    comment="Comtrade .cfg/.dat pairs joined on filename, decoded to analog readings via the comtrade library.",
+    comment="DISABLED - source bucket confirmed inaccessible (403 Forbidden, tested 2026-08-14). Empty stub, same pattern as eia_grid_data_raw.",
     table_properties={"quality": "bronze"},
 )
 def comtrade_events_raw():
-    cfg = dlt.read_stream("_comtrade_cfg_files_bronze")
-    dat = dlt.read_stream("_comtrade_dat_files_bronze")
-
-    joined = cfg.alias("cfg").join(
-        dat.alias("dat"),
-        on="base_name",
-        how="inner",
-    ).select(
-        F.col("base_name"),
-        F.col("cfg.content_cfg"),
-        F.col("dat.content_dat"),
-    )
-
-    json_schema = StructType([
-        StructField("frequency", DoubleType()),
-        StructField("rec_dev_id", StringType()),
-        StructField("station_name", StringType()),
-        StructField("microseconds", ArrayType(LongType())),
-        StructField("analog", ArrayType(ArrayType(DoubleType()))),
-        StructField("analog_units", ArrayType(StringType())),
-        StructField("analog_channel_names", ArrayType(StringType())),
-    ])
-
-    @F.udf("string")
-    def get_comtrade_as_json(cfg_content: bytes, dat_content: bytes) -> str:
-        # Same decode logic as comtrade-accelerator's 02_Read_COMTRADE_Files.py /
-        # 04_Fault_Detection_DLT.py - kept identical since it's just wrapping the
-        # comtrade library's parsing, not something specific to our design.
-        ct = Comtrade()
-        ct._cfg.read(cfg_content.decode())
-        ct._cfg_extract_channels_ids(ct._cfg)
-        ct._cfg_extract_phases(ct._cfg)
-        dat_reader = ct._get_dat_reader()
-        dat_reader.read(dat_content.decode() if ct.ft == "ASCII" else dat_content, ct._cfg)
-        ct._dat_extract_data(dat_reader)
-
-        ct_dict = {
-            "frequency": ct.frequency,
-            "rec_dev_id": ct.rec_dev_id,
-            "station_name": ct.station_name,
-            "microseconds": [int(ct.start_timestamp.timestamp()) + int(s * 1e6) for s in ct.time],
-        }
-        if ct.analog_count > 0:
-            ct_dict["analog"] = np.vstack(ct.analog).transpose().tolist()
-            ct_dict["analog_units"] = [c.uu for c in ct._cfg.analog_channels]
-            ct_dict["analog_channel_names"] = ct.analog_channel_ids
-        return json.dumps(ct_dict)
-
-    return (
-        joined
-        .withColumn("ctrade_json", get_comtrade_as_json("content_cfg", "content_dat"))
-        .withColumn("ctrade", F.from_json("ctrade_json", json_schema))
-        .select("base_name", "ctrade.*")
-        .withColumn("_ingested_at", F.current_timestamp())
-    )
+    return spark.createDataFrame([], COMTRADE_RAW_SCHEMA)
 
 # COMMAND ----------
 
