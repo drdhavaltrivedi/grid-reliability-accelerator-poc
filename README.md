@@ -196,13 +196,29 @@ real risk of being mistaken for measured grid telemetry, so it's fenced off:
 | UC Volumes (landing zones, checkpoints) | ✅ Created |
 | GitHub repo → Databricks Repo | ✅ Synced |
 | LCL sample data (1.3M rows) uploaded | ✅ Uploaded |
-| Seed telemetry (1,000 readings) landed | ✅ Uploaded |
+| Seed telemetry (1,250 readings, incl. an injected fault) landed | ✅ Uploaded |
 | Telemetry generator | ✅ Built, 4/4 tests pass |
 | Fault detector (statistical) | ✅ Built, 3/3 tests pass |
-| Bronze / Silver / Gold pipelines | 🔄 Deploying — see [Deployment log](#6-deployment-log) |
+| **Bronze pipeline** | ✅ **Runs successfully** |
+| **Silver pipeline** | ✅ **Runs successfully** |
+| Gold pipeline | 🔄 Deploying |
 | Fault detection streaming job | ⏳ Pending |
 | Dashboard + Genie | ⏳ Pending |
 | Two clean dry runs | ⏳ Pending |
+
+**Verified row counts in the live workspace** (queried 2026-08-15):
+
+| Table | Rows |
+|---|---|
+| `bronze.sensor_readings_raw` | 1,250 |
+| `bronze.lcl_smart_meter_raw` | 1,308,280 |
+| `silver.sensor_readings` | **1,309,524** |
+| ↳ `source = 'synthetic'` | 1,250 |
+| ↳ `source = 'lcl'` | 1,308,274 |
+
+The 6-row LCL difference between bronze and silver is the quality expectation
+working as intended — those rows carry the literal string `"Null"` in the kWh
+column and are dropped by `@dlt.expect_or_drop`.
 
 **Local test suites** (no Databricks needed):
 ```bash
@@ -238,6 +254,18 @@ the non-obvious parts someone repeating this will also hit:
 | `CF_EMPTY_DIR_FOR_SCHEMA_INFERENCE` | Auto Loader can't infer a schema from an empty landing dir — exactly the state after `demo_runner.py reset` | Declared **explicit schemas**; also removes a demo-day failure mode |
 | `DELTA_INVALID_CHARACTERS_IN_COLUMN_NAMES` | LCL's real header is `KWH/hh (per half hour) ` — spaces and parens are illegal in Delta column names | Renamed to `kwh_per_half_hour` at ingest |
 | Catalog creation via CLI rejected | Free Edition uses Default Storage; the catalog API wants an explicit `MANAGED LOCATION` | Created via SQL statement API instead |
+| `PARQUET_COLUMN_DATA_TYPE_MISMATCH` | **A real demo-breaking bug.** pyarrow types an all-`None` column as parquet `null`, not `string` — so batches *with* an injected fault had a different schema than normal batches. It would have failed at exactly the moment a fault was triggered in front of a prospect. | `ParquetSink` now writes with an explicit fixed `pa.schema(...)` |
+| `FileNotFoundException` on a landing file | Auto Loader's checkpoint still referenced files deleted during re-seeding | `start-update --full-refresh` (note: the flag is `--full-refresh`, not `--full-refresh-all`) |
+| `STREAMING_FROM_MATERIALIZED_VIEW` | `silver.fault_events` tried to stream from the disabled Comtrade stub, which is a batch materialized view | Switched that read to `spark.read.table` |
+
+### Why there were so many of these
+
+The pipeline code was written **before** workspace access existed (per the original
+"build locally first" decision), so ~2,400 lines of Spark/DLT went unexecuted until
+deployment day. The README flagged it as unverified, but flagging isn't preventing —
+each unvalidated assumption surfaced as its own failed run. If repeating this:
+use `databricks pipelines start-update --validate-only` to surface errors in batch
+instead of one run at a time.
 
 ## 7. Known gaps / open items
 
@@ -252,7 +280,25 @@ it stands:
 - **`confidence_score` is a heuristic** (`min(1, peak_z / 20)`), not a calibrated probability. Fine for a demo; don't let a prospect read it as a real confidence interval.
 - **Cost:** everything runs on serverless / 2X-Small. The accelerator's own default was a 5-worker cluster — deliberately not copied (Hard Constraint #4).
 
-## 8. Repo layout
+## 8. Public data sources
+
+Everything here is real, public, and citable — no customer or prospect data, per
+Hard Constraint #1. Availability re-verified 2026-08-15.
+
+| Source | Size | Credentials | Licence / terms | Used for |
+|---|---|---|---|---|
+| [Low Carbon London smart meter data](https://data.london.gov.uk/dataset/smartmeter-energy-use-data-in-london-households) | 759 MB zip (168 blocks) | **None** — direct download | CC-BY | ✅ **In use.** 300 households × 3 months subset (1.3M rows) for consumption-shape realism |
+| [EIA Open Data — bulk archives](https://api.eia.gov/bulk/EBA.zip) | ~650 MB | **None** — the bulk endpoint needs no API key, unlike the v2 REST API | US Gov public domain | ⭐ **Available, not yet wired.** Would un-stub `gold.grid_context` without needing the key registration the spec assumed |
+| [Open Power System Data — 60-min time series](https://data.open-power-system-data.org/time_series/latest/time_series_60min_singleindex.csv) | 124 MB | **None** | CC-BY 4.0 | Candidate: real European grid load/generation, hourly |
+| [UCI Individual Household Electric Power Consumption](https://archive.ics.uci.edu/dataset/235/individual+household+electric+power+consumption) | ~2M rows | **None** | CC-BY 4.0 | Candidate: 1-minute-resolution real household load — closer to our stream's cadence than LCL's half-hourly |
+| Comtrade fault files (`s3://db-gtm-industry-solutions/...`) | — | **Blocked** | — | ❌ **403 Forbidden**, confirmed from inside Databricks. Dead end. |
+
+**Recommended next data step:** wire the EIA bulk archive. It's the only one that
+closes a currently-open gap (`grid_context` is declared but empty), and the
+no-API-key bulk endpoint removes the blocker that caused EIA to be skipped
+originally.
+
+## 9. Repo layout
 
 ```
 energy/
@@ -279,7 +325,7 @@ energy/
 └── tests/                         standalone smoke tests
 ```
 
-## 9. Running it
+## 10. Running it
 
 **Local (no Databricks):**
 ```bash
